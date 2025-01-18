@@ -82,6 +82,26 @@ module sr_cpu
         .we3        ( regWrite     )
     );
 
+    //FIFO
+    wire full;
+    wire empty;
+    wire data_out_valid;
+    wire [7:0] data_out;
+    wire data_in_valid;
+    wire read_ready;
+
+    fifer fifer(
+        .i_clock            ( clk            ),
+        .reset              ( ~rst_n         ),
+        .data_in_valid      ( data_in_valid  ),
+        .data_in            ( rd1            ),
+        .read_ready         ( read_ready     ),
+        .data_out           ( data_out       ),
+        .data_out_valid     ( data_out_valid ),
+        .full               ( full           ),
+        .empty              ( empty          )
+    );
+
     //debug register access
     assign regData = (regAddr != 0) ? rd0 : pc;
 
@@ -97,7 +117,8 @@ module sr_cpu
         .result     ( aluResult    ) 
     );
 
-    assign wd3 = wdSrc ? immU : aluResult;
+    wire [31:0] result = data_out_valid ? data_out : aluResult;
+    assign wd3 = wdSrc ? immU : result;
 
     //control
     sr_control sm_control (
@@ -109,7 +130,9 @@ module sr_cpu
         .regWrite   ( regWrite     ),
         .aluSrc     ( aluSrc       ),
         .wdSrc      ( wdSrc        ),
-        .aluControl ( aluControl   ) 
+        .aluControl ( aluControl   ),
+        .data_in_valid ( data_in_valid ),
+        .read_ready ( read_ready )
     );
 
 endmodule
@@ -145,8 +168,7 @@ module sr_decode
         immB[    0] = 1'b0;
         immB[ 4: 1] = instr[11:8];
         immB[10: 5] = instr[30:25];
-        immB[   11] = instr[7];
-        immB[31:12] = { 20 {instr[31]} };
+        immB[31:11] = { 21 {instr[31]} };
     end
 
     // U-immediate
@@ -167,19 +189,24 @@ module sr_control
     output reg       regWrite, 
     output reg       aluSrc,
     output reg       wdSrc,
-    output reg [2:0] aluControl
+    output reg [2:0] aluControl,
+    //new signals for FIFO
+    output reg       data_in_valid,
+    output reg       read_ready
 );
     reg          branch;
     reg          condZero;
     assign pcSrc = branch & (aluZero == condZero);
 
     always @ (*) begin
-        branch      = 1'b0;
-        condZero    = 1'b0;
-        regWrite    = 1'b0;
-        aluSrc      = 1'b0;
-        wdSrc       = 1'b0;
-        aluControl  = `ALU_ADD;
+        branch          = 1'b0;
+        condZero        = 1'b0;
+        regWrite        = 1'b0;
+        aluSrc          = 1'b0;
+        wdSrc           = 1'b0;
+        data_in_valid   = 1'b0;
+        read_ready      = 1'b0;
+        aluControl      = `ALU_ADD;
 
         casez( {cmdF7, cmdF3, cmdOp} )
             { `RVF7_ADD,  `RVF3_ADD,  `RVOP_ADD  } : begin regWrite = 1'b1; aluControl = `ALU_ADD;  end
@@ -193,6 +220,10 @@ module sr_control
 
             { `RVF7_ANY,  `RVF3_BEQ,  `RVOP_BEQ  } : begin branch = 1'b1; condZero = 1'b1; aluControl = `ALU_SUB; end
             { `RVF7_ANY,  `RVF3_BNE,  `RVOP_BNE  } : begin branch = 1'b1; aluControl = `ALU_SUB; end
+
+            //decoding our instructions
+            { `RVF7_PUSH,  `RVF3_PUSH, `RVOP_PUSH  } : begin data_in_valid = 1'b1; end
+            { `RVF7_POP,  `RVF3_POP, `RVOP_POP   } : begin read_ready = 1'b1; regWrite = 1'b1; end
         endcase
     end
 endmodule
